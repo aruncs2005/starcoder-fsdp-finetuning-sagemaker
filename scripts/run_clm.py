@@ -31,8 +31,6 @@ def safe_save_model_for_hf_trainer(trainer: Trainer, tokenizer: AutoTokenizer, o
         tokenizer.save_pretrained(output_dir)
 
 
-   
-
 def parse_arge():
     """Parse the arguments."""
     parser = argparse.ArgumentParser()
@@ -43,7 +41,8 @@ def parse_arge():
         default="google/flan-t5-xl",
         help="Model id to use for training.",
     )
-    parser.add_argument("--dataset_path", type=str, default="lm_dataset", help="Path to dataset.")
+    parser.add_argument("--dataset_path", type=str, default=os.environ["SM_CHANNEL_TRAIN"], help="Path to dataset.")
+    parser.add_argument("--valid_path", type=str, default=os.environ["SM_CHANNEL_TRAIN"], help="Path to dataset.")
     # add training hyperparameters for epochs, batch size, learning rate, and seed
     parser.add_argument("--epochs", type=int, default=3, help="Number of epochs to train for.")
     parser.add_argument("--max_steps", type=int, default=None, help="Number of epochs to train for.")
@@ -138,7 +137,7 @@ def training_function(args):
     print("Training done!")
 
     # save model and tokenizer for easy inference
-    safe_save_model_for_hf_trainer(trainer, tokenizer, "/opt/ml/model/")
+    safe_save_model_for_hf_trainer(trainer, tokenizer, "/opt/ml/model")
     dist.barrier()
 
 
