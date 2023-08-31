@@ -15,7 +15,6 @@ from utils import create_dataloaders,get_module_class_from_name,save_model
 import time
 from tqdm import tqdm
 
-
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     MixedPrecision,
@@ -220,6 +219,8 @@ def training_function(args):
             lr_scheduler.step()
             optimizer.zero_grad()
             total_steps += 1
+            if total_steps > args.max_steps:
+                break
              
 
         torch.distributed.all_reduce(fsdp_loss, op=torch.distributed.ReduceOp.SUM)

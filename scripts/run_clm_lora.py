@@ -7,29 +7,10 @@ from transformers import (
     default_data_collator,
 )
 from datasets import load_from_disk
-import torch
 from transformers import Trainer, TrainingArguments
-import torch.distributed as dist
-#import torch.sagemaker as tsm
-#from peft import LoraConfig, TaskType, get_peft_model,get_peft_model_state_dict
 
-
-def safe_save_model_for_hf_trainer(trainer: Trainer, tokenizer: AutoTokenizer, output_dir: str):
-    """Helper method to save model for HF Trainer."""
-    # see: https://github.com/tatsu-lab/stanford_alpaca/issues/65
-    from torch.distributed.fsdp import (
-        FullyShardedDataParallel as FSDP,
-        FullStateDictConfig,
-        StateDictType,
-    )
-
-    model = trainer.model
-    save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
-        cpu_state_dict = model.state_dict()
-    if trainer.args.should_save:
-        trainer._save(output_dir, state_dict=cpu_state_dict)  # noqa
-        tokenizer.save_pretrained(output_dir)
+from peft import LoraConfig, get_peft_model,prepare_model_for_kbit_training
+from accelerate import Accelerator
 
 
 def parse_arge():
@@ -63,12 +44,7 @@ def parse_arge():
         default=True,
         help="Path to deepspeed config file.",
     )
-    parser.add_argument(
-        "--bf16",
-        type=bool,
-        default=True if torch.cuda.get_device_capability()[0] == 8 else False,
-        help="Whether to use bf16.",
-    )
+
     parser.add_argument("--fsdp", type=str, default=None, help="Whether to use fsdp.")
     parser.add_argument(
         "--fsdp_transformer_layer_cls_to_wrap",
@@ -76,6 +52,12 @@ def parse_arge():
         default=None,
         help="Which transformer layer to wrap with fsdp.",
     )
+    parser.add_argument("--lora_r", type=int, default=16)
+    parser.add_argument("--lora_alpha", type=int, default=32)
+    parser.add_argument("--lora_dropout", type=float, default=0.05)
+    parser.add_argument("--no_fp16", action="store_false")
+    parser.add_argument("--bf16", action="store_true", default=True)
+    parser.add_argument("--output_dir",type=str,default="/opt/ml/model")
 
     args = parser.parse_known_args()
     return args
@@ -94,28 +76,39 @@ def training_function(args):
     HfFolder.save_token(args.access_token)
 
     dataset = load_from_disk(args.dataset_path)
-    # load model from the hub
+
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
-        #token=args.access_token,
-        cache_dir="/opt/ml/sagemaker/warmpoolcache",
-        use_cache=False if args.gradient_checkpointing else True,  # this is needed for gradient checkpointing
+        use_auth_token=True,
+        use_cache=args.gradient_checkpointing,
+        load_in_8bit=True,
+        device_map={"": Accelerator().process_index},
+    )
+    model = prepare_model_for_kbit_training(model)
+
+    peft_config = LoraConfig(
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules = ["c_proj", "c_attn", "q_attn"]
     )
 
+    model = get_peft_model(model, peft_config)
+    model.print_trainable_parameters()
+    
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
 
-    fsdp_config = {}
-    fsdp_config["fsdp_transformer_layer_cls_to_wrap"] = args.fsdp_transformer_layer_cls_to_wrap
     # Define training args
     output_dir = "/tmp"
     training_args = TrainingArguments(
         output_dir=output_dir,
         overwrite_output_dir=True,
         per_device_train_batch_size=args.per_device_train_batch_size,
-        bf16=args.bf16,  # Use BF16 if available
         learning_rate=args.lr,
         num_train_epochs=args.epochs,
-        gradient_checkpointing=True,#args.gradient_checkpointing,
+        gradient_checkpointing=True,
         # logging strategies
         logging_dir=f"{output_dir}/logs",
         logging_strategy="steps",
@@ -124,9 +117,9 @@ def training_function(args):
         optim=args.optimizer,
         max_steps=args.max_steps,
         ddp_timeout=7200,
-        fsdp=args.fsdp,
-        fsdp_config=fsdp_config,
-        #fsdp_transformer_layer_cls_to_wrap=args.fsdp_transformer_layer_cls_to_wrap,
+        fp16=not args.no_fp16,
+        bf16=args.bf16,
+        ddp_find_unused_parameters=False,
     )
 
     # Create Trainer instance
@@ -143,9 +136,8 @@ def training_function(args):
 
     print("Training done!")
 
-    # save model and tokenizer for easy inference
-    safe_save_model_for_hf_trainer(trainer, tokenizer, "/opt/ml/model")
-    dist.barrier()
+    print("Saving last checkpoint of the model")
+    model.save_pretrained(os.path.join(args.output_dir, "final_checkpoint/"))
 
 
 def main():
