@@ -10,9 +10,6 @@ from datasets import load_from_disk
 import torch
 from transformers import Trainer, TrainingArguments
 import torch.distributed as dist
-#import torch.sagemaker as tsm
-#from peft import LoraConfig, TaskType, get_peft_model,get_peft_model_state_dict
-
 
 def safe_save_model_for_hf_trainer(trainer: Trainer, tokenizer: AutoTokenizer, output_dir: str):
     """Helper method to save model for HF Trainer."""
@@ -84,11 +81,6 @@ def parse_arge():
 def training_function(args):
     # set seed
     set_seed(args.seed)
-
-    # tsm.init({
-    # "hybrid_shard_degree": 24,
-    # "sm_activation_offloading": True,
-    # })
 
     from huggingface_hub.hf_api import HfFolder;
     HfFolder.save_token(args.access_token)
